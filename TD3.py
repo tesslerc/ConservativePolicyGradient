@@ -13,6 +13,11 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Implementation of Twin Delayed Deep Deterministic Policy Gradients (TD3)
 # Paper: https://arxiv.org/abs/1802.09477
 
+def fanin_init(size, fanin=None):
+    fanin = fanin or size[0]
+    v = 1. / np.sqrt(fanin)
+    return torch.Tensor(size).uniform_(-v, v)
+
 
 class Actor(nn.Module):
     def __init__(self, state_dim, action_dim, max_action):
@@ -23,6 +28,13 @@ class Actor(nn.Module):
         self.l3 = nn.Linear(300, action_dim)
 
         self.max_action = max_action
+
+        self.init_weights(3e-3)
+
+    def init_weights(self, init_w):
+        self.l1.weight.data = fanin_init(self.l1.weight.data.size())
+        self.l2.weight.data = fanin_init(self.l2.weight.data.size())
+        self.l3.weight.data.uniform_(-init_w, init_w)
 
     def forward(self, x):
         x = F.relu(self.l1(x))
@@ -44,6 +56,17 @@ class Critic(nn.Module):
         self.l4 = nn.Linear(state_dim + action_dim, 400)
         self.l5 = nn.Linear(400, 300)
         self.l6 = nn.Linear(300, 1)
+
+        self.init_weights(3e-3)
+
+    def init_weights(self, init_w):
+        self.l1.weight.data = fanin_init(self.l1.weight.data.size())
+        self.l2.weight.data = fanin_init(self.l2.weight.data.size())
+        self.l3.weight.data.uniform_(-init_w, init_w)
+
+        self.l4.weight.data = fanin_init(self.l4.weight.data.size())
+        self.l5.weight.data = fanin_init(self.l5.weight.data.size())
+        self.l6.weight.data.uniform_(-init_w, init_w)
 
     def forward(self, x, u):
         xu = torch.cat([x, u], 1)
@@ -71,14 +94,18 @@ class TD3(object):
         self.actor = Actor(state_dim, action_dim, max_action).to(device)
         self.actor_target = Actor(state_dim, action_dim, max_action).to(device)
         self.actor_target.load_state_dict(self.actor.state_dict())
+        self.actor_static = Actor(state_dim, action_dim, max_action).to(device)
+        self.actor_static.load_state_dict(self.actor.state_dict())
         # self.actor_optimizer = RAdam(self.actor.parameters())
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters())
+        # self.actor_optimizer = torch.optim.SGD(self.actor.parameters(), lr=0.0001, momentum=0.1)
 
         self.critic = Critic(state_dim, action_dim).to(device)
         self.critic_target = Critic(state_dim, action_dim).to(device)
         self.critic_target.load_state_dict(self.critic.state_dict())
         # self.critic_optimizer = RAdam(self.critic.parameters())
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters())
+        # self.critic_optimizer = torch.optim.SGD(self.critic.parameters(), lr=0.01, momentum=0.1)
 
         self.max_action = max_action
         self.use_target_q = use_target_q
@@ -103,7 +130,7 @@ class TD3(object):
         for it in range(iterations):
 
             # Sample replay buffer
-            x, y, u, r, d = replay_buffer.sample(batch_size)
+            x, y, u, r, d, _ = replay_buffer.sample(batch_size)
             state = torch.FloatTensor(x).to(device)
             action = torch.FloatTensor(u).to(device)
             next_state = torch.FloatTensor(y).to(device)
@@ -163,6 +190,7 @@ class TD3(object):
                 if update_target_actor:
                     for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
                         target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+
 
         return abs_critic_loss / iterations, abs_actor_loss / iterations * policy_freq
 
